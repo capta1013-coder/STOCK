@@ -36,7 +36,7 @@ if not check_password():
     st.stop()
 
 # ----------------- 登入成功後的主畫面 -----------------
-st.title("📱 專屬存股績效追蹤器 (買賣進階版)")
+st.title("📱 專屬存股績效追蹤器 (進階旗艦版)")
 if st.sidebar.button("登出"):
     st.session_state["password_correct"] = False
     st.rerun()
@@ -50,7 +50,6 @@ def get_google_sheet():
         else:
             gc = gspread.service_account(filename="google_key.json")
         
-        # 使用你設定的檔案名稱直接連線！
         sh = gc.open("存股")
         return sh.sheet1
     except Exception as e:
@@ -62,7 +61,7 @@ worksheet = get_google_sheet()
 def load_data():
     records = worksheet.get_all_records()
     if not records:
-        return pd.DataFrame(columns=["交易日期", "交易類別", "股票代碼", "成交單價", "成交股數"])
+        return pd.DataFrame(columns=["交易日期", "交易類別", "股票代碼", "股票名稱", "成交單價", "成交股數"])
     df = pd.DataFrame(records)
     df['交易日期'] = pd.to_datetime(df['交易日期'], format='%Y-%m-%d', errors='coerce').dt.date
     return df
@@ -75,11 +74,10 @@ days = st.sidebar.slider("選擇走勢圖查看過去幾個「交易日」：", 
 tab1, tab2, tab3 = st.tabs(["📊 庫存總覽與走勢", "📝 手機專用記帳", "⚙️ 修改歷史紀錄"])
 
 # ==========================================
-# 分頁 2：手機專用記帳 (大按鈕表單)
+# 分頁 2：手機專用記帳
 # ==========================================
 with tab2:
     st.subheader("📝 新增一筆存股紀錄")
-    st.write("這是專為手機設計的輸入介面，輸入完按下送出即可！")
     
     with st.form("mobile_input_form", clear_on_submit=True):
         input_type = st.radio("交易類別", ["買進", "賣出"], horizontal=True)
@@ -88,8 +86,9 @@ with tab2:
         with col1:
             input_date = st.date_input("交易日期", date.today())
             input_code = st.text_input("股票代碼 (免加.TW)", placeholder="例如: 2330")
-        with col2:
             input_price = st.number_input("成交單價", min_value=0.0, step=0.1)
+        with col2:
+            input_name = st.text_input("股票名稱", placeholder="例如: 台積電")
             input_shares = st.number_input("成交股數", min_value=1, step=1)
             
         submitted = st.form_submit_button("🚀 確認送出並寫入雲端", type="primary", use_container_width=True)
@@ -102,6 +101,7 @@ with tab2:
                     "交易日期": input_date,
                     "交易類別": input_type,
                     "股票代碼": input_code.strip(),
+                    "股票名稱": input_name.strip(),
                     "成交單價": input_price,
                     "成交股數": input_shares
                 }])
@@ -109,18 +109,17 @@ with tab2:
                 
                 upload_df = st.session_state['ledger'].copy()
                 upload_df['交易日期'] = upload_df['交易日期'].astype(str)
-                # 👉 安全鎖 1：把所有 NaN 替換為空白字串，避免 InvalidJSONError
                 upload_df = upload_df.fillna("") 
                 
                 worksheet.clear()
                 worksheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
-                st.success(f"✅ 成功寫入雲端：{input_code} {input_type} {input_shares} 股！")
+                st.success(f"✅ 成功寫入雲端：{input_name} ({input_code}) {input_type} {input_shares} 股！")
 
 # ==========================================
 # 分頁 3：修改歷史紀錄
 # ==========================================
 with tab3:
-    st.info("如果你發現以前的紀錄打錯了，可以在這邊直接像 Excel 一樣修改，修改完記得按儲存。")
+    st.info("💡 提示：可以在這裡直接修改歷史紀錄或補上股票名稱，改完後點擊下方按鈕存檔！")
     edited_ledger = st.data_editor(
         st.session_state['ledger'], 
         num_rows="dynamic", 
@@ -134,7 +133,6 @@ with tab3:
         
         upload_df = edited_ledger.copy()
         upload_df['交易日期'] = upload_df['交易日期'].astype(str)
-        # 👉 安全鎖 2：把所有 NaN 替換為空白字串，避免 InvalidJSONError
         upload_df = upload_df.fillna("")
         
         worksheet.clear()
@@ -142,29 +140,35 @@ with tab3:
         st.success("✅ 歷史紀錄修改已同步至雲端！")
 
 # ==========================================
-# 分頁 1：庫存總覽與走勢 (輸出端 - 包含平倉邏輯)
+# 分頁 1：庫存總覽與走勢 (自動判斷上市櫃 + 保底顯示)
 # ==========================================
 with tab1:
-    ledger_df = st.session_state['ledger'].dropna(subset=["股票代碼", "成交單價", "成交股數"])
+    ledger_df = st.session_state['ledger'].dropna(subset=["股票代碼", "成交單價", "成交股數"]).copy()
+    
     if ledger_df.empty:
         st.warning("目前雲端資料庫是空的。請新增紀錄！")
     else:
+        if '股票名稱' not in ledger_df.columns:
+            ledger_df['股票名稱'] = ""
+        ledger_df['股票名稱'] = ledger_df['股票名稱'].fillna("").astype(str)
+        
         ledger_df['成交單價'] = ledger_df['成交單價'].astype(float)
         ledger_df['成交股數'] = ledger_df['成交股數'].astype(int)
         
-        # 買賣相抵庫存邏輯
         ledger_df['買進股數'] = ledger_df.apply(lambda x: x['成交股數'] if x['交易類別'] == '買進' else 0, axis=1)
         ledger_df['賣出股數'] = ledger_df.apply(lambda x: x['成交股數'] if x['交易類別'] == '賣出' else 0, axis=1)
         ledger_df['買進總額'] = ledger_df['買進股數'] * ledger_df['成交單價']
         
         summary_df = ledger_df.groupby('股票代碼').agg(
+            股票名稱=('股票名稱', 'max'),
             總買進股數=('買進股數', 'sum'),
             總賣出股數=('賣出股數', 'sum'),
             總買進成本=('買進總額', 'sum')
         ).reset_index()
         
+        summary_df['股票名稱'] = summary_df['股票名稱'].replace("", "未命名")
         summary_df['持有總股數'] = summary_df['總買進股數'] - summary_df['總賣出股數']
-        summary_df = summary_df[summary_df['持有總股數'] > 0] # 過濾掉已賣光的股票
+        summary_df = summary_df[summary_df['持有總股數'] > 0]
         
         summary_df['平均成本價'] = summary_df.apply(
             lambda x: x['總買進成本'] / x['總買進股數'] if x['總買進股數'] > 0 else 0, axis=1
@@ -182,28 +186,44 @@ with tab1:
                 
                 for index, row in summary_df.iterrows():
                     code = str(row['股票代碼']).strip()
+                    name = str(row['股票名稱'])
                     shares = int(row['持有總股數'])
                     avg_price = float(row['平均成本價'])
                     current_cost = shares * avg_price
                     
-                    ticker = f"{code}.TW"
-                    stock_info = yf.download(ticker, period="5d", progress=False)
+                    # 👉 修正抓取邏輯：先試上市 (.TW)，再試上櫃 (.TWO)
+                    current_price = 0.0
+                    stock_info = yf.download(f"{code}.TW", period="5d", progress=False)
+                    if stock_info.empty:
+                        stock_info = yf.download(f"{code}.TWO", period="5d", progress=False)
+                    
                     if not stock_info.empty:
                         current_price = float(stock_info['Close'].squeeze().iloc[-1])
-                        stock_value = current_price * shares
-                        profit_loss = stock_value - current_cost
-                        roi = (profit_loss / current_cost) * 100 if current_cost > 0 else 0
-                        
-                        total_cost += current_cost
-                        total_value += stock_value
-                        results.append({
-                            "股票代碼": code, "庫存股數": shares, "平均買價": round(avg_price, 2),
-                            "最新股價": round(current_price, 2), "剩餘總成本": round(current_cost, 0),
-                            "目前總市值": round(stock_value, 0), "未實現損益": round(profit_loss, 0),
-                            "報酬率 (%)": round(roi, 2)
-                        })
+                    else:
+                        # 👉 保底機制：如果真的抓不到資料，暫時用成本價代替現價，保證該筆庫存顯示在清單中！
+                        current_price = avg_price
+                    
+                    stock_value = current_price * shares
+                    profit_loss = stock_value - current_cost
+                    roi = (profit_loss / current_cost) * 100 if current_cost > 0 else 0
+                    
+                    total_cost += current_cost
+                    total_value += stock_value
+                    results.append({
+                        "股票名稱": name,
+                        "股票代碼": code, 
+                        "庫存股數": shares, 
+                        "平均買價": round(avg_price, 2),
+                        "最新股價": round(current_price, 2), 
+                        "剩餘總成本": round(current_cost, 0),
+                        "目前總市值": round(stock_value, 0), 
+                        "未實現損益": round(profit_loss, 0),
+                        "報酬率 (%)": round(roi, 2)
+                    })
                 if results:
-                    st.dataframe(pd.DataFrame(results), use_container_width=True)
+                    display_df = pd.DataFrame(results)
+                    st.dataframe(display_df, use_container_width=True)
+                    
                     st.success(f"### 🎯 總投資成本：{total_cost:,.0f} 元 ｜ 📈 目前總市值：{total_value:,.0f} 元")
                     total_pl = total_value - total_cost
                     total_roi = (total_pl / total_cost) * 100 if total_cost > 0 else 0
@@ -215,13 +235,20 @@ with tab1:
                     st.divider()
                     st.subheader(f"📊 庫存持股過去 {days} 個交易日走勢比較")
                     all_roi_data = pd.DataFrame()
-                    for code in portfolio_codes:
-                        ticker = f"{code}.TW" 
-                        data = yf.download(ticker, period=f"{days+20}d", progress=False)
+                    for idx, row in summary_df.iterrows():
+                        code = str(row['股票代碼']).strip()
+                        name = str(row['股票名稱']).strip()
+                        label = f"{code} ({name})"
+                        
+                        # 走勢圖一樣加上雙重抓取邏輯
+                        data = yf.download(f"{code}.TW", period=f"{days+20}d", progress=False)
+                        if data.empty:
+                            data = yf.download(f"{code}.TWO", period=f"{days+20}d", progress=False)
+                            
                         if not data.empty:
                             close_prices = data['Close'].squeeze().tail(days)
                             base_price = float(close_prices.iloc[0])
                             roi_series = ((close_prices - base_price) / base_price) * 100
-                            all_roi_data[code] = roi_series
+                            all_roi_data[label] = roi_series
                     if not all_roi_data.empty:
                         st.line_chart(all_roi_data)
