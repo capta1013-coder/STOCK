@@ -36,7 +36,7 @@ if not check_password():
     st.stop()
 
 # ----------------- 登入成功後的主畫面 -----------------
-st.title("📱 專屬存股績效追蹤器 (進階旗艦版)")
+st.title("📱 專屬存股績效追蹤器 (自動命名版)")
 if st.sidebar.button("登出"):
     st.session_state["password_correct"] = False
     st.rerun()
@@ -71,13 +71,38 @@ if 'ledger' not in st.session_state:
 
 days = st.sidebar.slider("選擇走勢圖查看過去幾個「交易日」：", 10, 120, 60, 10)
 
+# ----------------- 新增：自動抓取股票名稱函式 -----------------
+def get_stock_name(code):
+    """
+    根據股票代碼，透過 yfinance 自動抓取公司名稱。
+    會自動嘗試上市 (.TW) 與上櫃 (.TWO)。
+    """
+    try:
+        # 先嘗試上市 (TW)
+        ticker_tw = yf.Ticker(f"{code}.TW")
+        name_tw = ticker_tw.info.get('shortName')
+        if name_tw:
+            return name_tw
+            
+        # 再嘗試上櫃 (TWO)
+        ticker_two = yf.Ticker(f"{code}.TWO")
+        name_two = ticker_two.info.get('shortName')
+        if name_two:
+            return name_two
+            
+    except Exception:
+        pass
+        
+    return "" # 若抓不到，回傳空字串，讓使用者可以後續在表格手動修改
+
 tab1, tab2, tab3 = st.tabs(["📊 庫存總覽與走勢", "📝 手機專用記帳", "⚙️ 修改歷史紀錄"])
 
 # ==========================================
-# 分頁 2：手機專用記帳
+# 分頁 2：手機專用記帳 (極速版：移除手動名稱輸入)
 # ==========================================
 with tab2:
     st.subheader("📝 新增一筆存股紀錄")
+    st.write("💡 輸入代碼後，系統會自動聯網幫你找股票名稱喔！")
     
     with st.form("mobile_input_form", clear_on_submit=True):
         input_type = st.radio("交易類別", ["買進", "賣出"], horizontal=True)
@@ -86,9 +111,8 @@ with tab2:
         with col1:
             input_date = st.date_input("交易日期", date.today())
             input_code = st.text_input("股票代碼 (免加.TW)", placeholder="例如: 2330")
-            input_price = st.number_input("成交單價", min_value=0.0, step=0.1)
         with col2:
-            input_name = st.text_input("股票名稱", placeholder="例如: 台積電")
+            input_price = st.number_input("成交單價", min_value=0.0, step=0.1)
             input_shares = st.number_input("成交股數", min_value=1, step=1)
             
         submitted = st.form_submit_button("🚀 確認送出並寫入雲端", type="primary", use_container_width=True)
@@ -97,11 +121,16 @@ with tab2:
             if not input_code:
                 st.error("請輸入股票代碼！")
             else:
+                code_clean = input_code.strip()
+                # 送出時，呼叫函式自動抓取名稱
+                with st.spinner(f"正在查詢 {code_clean} 的股票名稱..."):
+                    fetched_name = get_stock_name(code_clean)
+                    
                 new_row = pd.DataFrame([{
                     "交易日期": input_date,
                     "交易類別": input_type,
-                    "股票代碼": input_code.strip(),
-                    "股票名稱": input_name.strip(),
+                    "股票代碼": code_clean,
+                    "股票名稱": fetched_name, # 將自動抓到的名稱寫入
                     "成交單價": input_price,
                     "成交股數": input_shares
                 }])
@@ -113,7 +142,11 @@ with tab2:
                 
                 worksheet.clear()
                 worksheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
-                st.success(f"✅ 成功寫入雲端：{input_name} ({input_code}) {input_type} {input_shares} 股！")
+                
+                if fetched_name:
+                    st.success(f"✅ 成功寫入雲端：{fetched_name} ({code_clean}) {input_type} {input_shares} 股！")
+                else:
+                    st.warning(f"✅ 成功寫入雲端：代碼 {code_clean} {input_type} {input_shares} 股！(自動抓取名稱失敗，可至歷史紀錄補齊)")
 
 # ==========================================
 # 分頁 3：修改歷史紀錄
@@ -140,7 +173,7 @@ with tab3:
         st.success("✅ 歷史紀錄修改已同步至雲端！")
 
 # ==========================================
-# 分頁 1：庫存總覽與走勢 (自動判斷上市櫃 + 保底顯示)
+# 分頁 1：庫存總覽與走勢 
 # ==========================================
 with tab1:
     ledger_df = st.session_state['ledger'].dropna(subset=["股票代碼", "成交單價", "成交股數"]).copy()
@@ -191,7 +224,6 @@ with tab1:
                     avg_price = float(row['平均成本價'])
                     current_cost = shares * avg_price
                     
-                    # 👉 修正抓取邏輯：先試上市 (.TW)，再試上櫃 (.TWO)
                     current_price = 0.0
                     stock_info = yf.download(f"{code}.TW", period="5d", progress=False)
                     if stock_info.empty:
@@ -200,7 +232,6 @@ with tab1:
                     if not stock_info.empty:
                         current_price = float(stock_info['Close'].squeeze().iloc[-1])
                     else:
-                        # 👉 保底機制：如果真的抓不到資料，暫時用成本價代替現價，保證該筆庫存顯示在清單中！
                         current_price = avg_price
                     
                     stock_value = current_price * shares
@@ -240,7 +271,6 @@ with tab1:
                         name = str(row['股票名稱']).strip()
                         label = f"{code} ({name})"
                         
-                        # 走勢圖一樣加上雙重抓取邏輯
                         data = yf.download(f"{code}.TW", period=f"{days+20}d", progress=False)
                         if data.empty:
                             data = yf.download(f"{code}.TWO", period=f"{days+20}d", progress=False)
