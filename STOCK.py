@@ -62,7 +62,6 @@ worksheet = get_google_sheet()
 def load_data():
     records = worksheet.get_all_records()
     if not records:
-        # 加入了「交易類別」，並將買入改為「成交」
         return pd.DataFrame(columns=["交易日期", "交易類別", "股票代碼", "成交單價", "成交股數"])
     df = pd.DataFrame(records)
     df['交易日期'] = pd.to_datetime(df['交易日期'], format='%Y-%m-%d', errors='coerce').dt.date
@@ -83,7 +82,6 @@ with tab2:
     st.write("這是專為手機設計的輸入介面，輸入完按下送出即可！")
     
     with st.form("mobile_input_form", clear_on_submit=True):
-        # 新增買進與賣出的選項
         input_type = st.radio("交易類別", ["買進", "賣出"], horizontal=True)
         
         col1, col2 = st.columns(2)
@@ -111,6 +109,9 @@ with tab2:
                 
                 upload_df = st.session_state['ledger'].copy()
                 upload_df['交易日期'] = upload_df['交易日期'].astype(str)
+                # 👉 安全鎖 1：把所有 NaN 替換為空白字串，避免 InvalidJSONError
+                upload_df = upload_df.fillna("") 
+                
                 worksheet.clear()
                 worksheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
                 st.success(f"✅ 成功寫入雲端：{input_code} {input_type} {input_shares} 股！")
@@ -130,8 +131,12 @@ with tab3:
     )
     if st.button("💾 儲存修改至雲端資料庫"):
         st.session_state['ledger'] = edited_ledger
+        
         upload_df = edited_ledger.copy()
         upload_df['交易日期'] = upload_df['交易日期'].astype(str)
+        # 👉 安全鎖 2：把所有 NaN 替換為空白字串，避免 InvalidJSONError
+        upload_df = upload_df.fillna("")
+        
         worksheet.clear()
         worksheet.update([upload_df.columns.values.tolist()] + upload_df.values.tolist())
         st.success("✅ 歷史紀錄修改已同步至雲端！")
